@@ -469,17 +469,53 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return serialized
 
 
+def _extract_reasoning_details_text(message: Any) -> Optional[str]:
+    """Pull reasoning text from OpenRouter's unified ``reasoning_details`` array.
+
+    Each entry is a ``{type, summary|thinking|content|text}`` object. Surfaced
+    on ``NormalizedResponse.reasoning_details`` (property at
+    ``agent/transports/types.py:120``). Both
+    ``agent.auxiliary_client.extract_content_or_reasoning`` and
+    ``run_agent.AgentLoop._extract_reasoning`` already cover this third
+    source; this keeps the plugin aligned.
+    """
+    details = getattr(message, "reasoning_details", None)
+    if not isinstance(details, list):
+        return None
+    parts: list[str] = []
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        summary = (
+            detail.get("summary")
+            or detail.get("thinking")
+            or detail.get("content")
+            or detail.get("text")
+        )
+        if not summary:
+            continue
+        text = summary.strip() if isinstance(summary, str) else str(summary)
+        if text and text not in parts:
+            parts.append(text)
+    return "\n\n".join(parts) if parts else None
+
+
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     # Providers that emit chain-of-thought via the `reasoning_content`
     # convention (LM Studio, Moonshot, Qwen3 thinking, DeepSeek) leave the
     # top-level `reasoning` field unset and stash the text under
     # `provider_data["reasoning_content"]`, which NormalizedResponse exposes
-    # as the `reasoning_content` property.  Read `reasoning` first to keep
-    # Anthropic / Codex behaviour unchanged, then fall back so Langfuse's
-    # observation actually shows the thinking instead of `reasoning: None`.
+    # as the `reasoning_content` property.  OpenRouter's unified format uses
+    # a third shape: `reasoning_details` as an array of typed summaries.
+    # Read `reasoning` first to keep Anthropic / Codex behaviour unchanged,
+    # then fall back through `reasoning_content` and finally
+    # `reasoning_details` so Langfuse shows the thinking instead of
+    # `reasoning: None`, regardless of which convention the provider uses.
     reasoning = getattr(message, "reasoning", None)
     if not reasoning:
         reasoning = getattr(message, "reasoning_content", None)
+    if not reasoning:
+        reasoning = _extract_reasoning_details_text(message)
     return {
         "content": _safe_value(getattr(message, "content", None)),
         "reasoning": _safe_value(reasoning),

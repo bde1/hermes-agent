@@ -786,3 +786,91 @@ class TestSerializeAssistantMessageReasoning:
 
         out = mod._serialize_assistant_message(_Msg())
         assert out["reasoning"] is None
+
+    # -- OpenRouter `reasoning_details` (third fallback) ---------------------
+    # Mirrors the `reasoning_details` branch in
+    # `agent.auxiliary_client.extract_content_or_reasoning` and
+    # `run_agent.AgentLoop._extract_reasoning` so the plugin stays aligned
+    # with the rest of Hermes.
+
+    def test_falls_back_to_reasoning_details_summary(self):
+        """OpenRouter unified format: array of {type, summary} objects."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                {"type": "reasoning.summary", "summary": "step A"},
+                {"type": "reasoning.summary", "summary": "step B"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "step A\n\nstep B"
+
+    def test_reasoning_details_accepts_alternate_keys(self):
+        """Different providers populate summary / thinking / content / text."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                {"thinking": "via thinking key"},
+                {"content": "via content key"},
+                {"text": "via text key"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "via thinking key\n\nvia content key\n\nvia text key"
+
+    def test_reasoning_details_only_consulted_when_other_fields_empty(self):
+        """Don't override an existing `reasoning_content` with details."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = "deepseek text"
+            reasoning_details = [{"summary": "should not appear"}]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "deepseek text"
+
+    def test_reasoning_details_non_list_ignored(self):
+        """Defensive: a non-list `reasoning_details` must not raise."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = "not-a-list"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] is None
+
+    def test_reasoning_details_empty_entries_skipped(self):
+        """Entries with no extractable text don't generate empty joins."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                {"summary": ""},
+                {"summary": None},
+                {"type": "reasoning.summary"},  # no text key at all
+                {"summary": "real text"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "real text"
